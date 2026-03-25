@@ -213,23 +213,38 @@ export default function App() {
     setUserInput('');
     setIsLoading(true);
 
+    const dayLabel = `${DAY_NAMES_FULL[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]}, ${new Date().getDate()} de ${MONTHS_FULL[new Date().getMonth()]}`;
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [...messages, { role: 'user', content: finalMessage }],
-          systemPrompt: SYSTEM_PROMPT
+          system_prompt: SYSTEM_PROMPT,
+          day_label: dayLabel
         })
       });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Error en API:", res.status, errorData);
+        setMessages(prev => [...prev, { role: 'assistant', content: `_Error del servidor (${res.status}): ${errorData.error || errorData.message || 'Sin detalles'}_` }]);
+        return;
+      }
+
       const data = await res.json();
-      if (data.content) {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+      const content = data.choices?.[0]?.message?.content;
+
+      if (content) {
+        setMessages(prev => [...prev, { role: 'assistant', content: content }]);
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: '_Error: No se recibió respuesta._' }]);
+        console.warn("Respuesta sin contenido:", data);
+        setMessages(prev => [...prev, { role: 'assistant', content: `_Error: No se recibió contenido. (Fuente: ${data.provider || 'desconocida'})_` }]);
       }
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: '_Error de conexión. Inténtalo de nuevo._' }]);
+      console.error("Error de red/fetch:", err);
+      setMessages(prev => [...prev, { role: 'assistant', content: `_Error de conexión: ${err.message}. Revisa la consola o asegúrate de que 'netlify dev' está corriendo._` }]);
     } finally {
       setIsLoading(false);
     }
@@ -387,6 +402,7 @@ export default function App() {
           <div className="input-area">
             <div className="input-box">
               <textarea 
+                id="userInput"
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyDown={(e) => {

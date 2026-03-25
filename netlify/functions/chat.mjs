@@ -1,81 +1,314 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// netlify/functions/chat.mjs
 
 export const handler = async (event) => {
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
+  if (event.httpMethod !== 'POST') {
+    return jsonResponse(405, { error: 'Method Not Allowed' });
   }
 
-  const { messages, systemPrompt } = JSON.parse(event.body);
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  try {
+    const { messages, system_prompt, day_label } = JSON.parse(event.body || '{}');
 
-  // 1. Intentar con Gemini
-  if (GEMINI_API_KEY) {
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    const openrouterApiKey = process.env.OPENROUTER_API_KEY;
+
+    if (!geminiApiKey && !openrouterApiKey) {
+      return jsonResponse(500, {
+        error: 'Falta configurar GEMINI_API_KEY o OPENROUTER_API_KEY en Netlify'
+      });
+    }
+
+    let geminiError = null;
+    let openrouterError = null;
+
+    // 1) Intentar primero con Gemini
+    if (geminiApiKey) {
+      console.log('[Gemini] Intentando conectar con Gemini...');
+      try {
+        const geminiResult = await callGemini({
+          apiKey: geminiApiKey,
+          systemPrompt: system_prompt,
+          dayLabel: day_label,
+          messages
+        });
+
+        return jsonResponse(200, {
+          choices: [
+            {
+              message: {
+                content: geminiResult.text
+              }
+            }
+          ],
+          used_model: geminiResult.model,
+          provider: 'gemini'
+        });
+      } catch (err) {
+        geminiError = err.message || 'Error desconocido en Gemini';
+        console.error('[Gemini] Error:', geminiError);
+      }
+    }
+
+    // 2) Fallback a OpenRouter
+    if (openrouterApiKey) {
+      console.log('[OpenRouter] Fallback activado...');
+      try {
+        const openrouterResult = await callOpenRouter({
+          apiKey: openrouterApiKey,
+          systemPrompt: system_prompt,
+          dayLabel: day_label,
+          messages
+        });
+
+        return jsonResponse(200, {
+          ...openrouterResult,
+          provider: 'openrouter'
+        });
+      } catch (err) {
+        openrouterError = err.message || 'Error desconocido en OpenRouter';
+        console.error('[OpenRouter] Error:', openrouterError);
+      }
+    }
+
+    // 3) Error final controlado
+    return jsonResponse(503, {
+      error: 'No se pudo obtener respuesta del modelo',
+      gemini_error: geminiError,
+      openrouter_error: openrouterError,
+      suggestion: 'Reintenta en 30-60 segundos. Si ocurre a menudo, revisa cuota de Gemini y límites de OpenRouter.'
+    });
+
+  } catch (error) {
+    return jsonResponse(500, {
+      error: error.message || 'Error interno en la función Serverless'
+    });
+  }
+};
+
+function jsonResponse(statusCode, body) {
+  return {
+    statusCode,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  };
+}
+
+async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
+  const candidateModels = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite'
+  ];
+
+  const contents = convertChatHistoryToGeminiContents(messages);
+
+  const body = {
+    systemInstruction: {
+      parts: [
+        {
+          text: `${systemPrompt}\n\nDÍA ACTUAL: ${dayLabel}`
+        }
+      ]
+    },
+    contents,
+    generationConfig: {
+      temperature: 0.2
+    }
+  };
+
+  let lastError = null;
+
+  for (const model of candidateModels) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
+
     try {
-      console.log("Intentando con Gemini...");
-      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        systemInstruction: systemPrompt 
-      });
+      console.log(`[Gemini] Probando modelo: ${model}...`);
 
-      // Convertir historial al formato de Gemini
-      const chat = model.startChat({
-        history: messages.slice(0, -1).map(m => ({
-          role: m.role === "assistant" ? "model" : "user",
-          parts: [{ text: m.content }],
-        })),
-      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        }
+      );
 
-      const lastMessage = messages[messages.length - 1].content;
-      const result = await chat.sendMessage(lastMessage);
-      const responseText = result.response.text();
+      clearTimeout(timeoutId);
 
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ content: responseText, source: "gemini" }),
-      };
-    } catch (error) {
-      console.error("Error en Gemini:", error);
-      // Continuar al fallback de OpenRouter
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message =
+          data?.error?.message ||
+          `Gemini HTTP ${response.status}`;
+
+        // Si es quota/rate limit, salir rápido al fallback
+        if (
+          response.status === 429 ||
+          /quota exceeded/i.test(message) ||
+          /rate limit/i.test(message) ||
+          /resource_exhausted/i.test(message)
+        ) {
+          throw new Error(`Gemini quota/rate limit: ${message}`);
+        }
+
+        lastError = `${model}: ${message}`;
+        continue;
+      }
+
+      const text = extractGeminiText(data);
+
+      if (!text) {
+        lastError = `${model}: Gemini no devolvió texto utilizable`;
+        continue;
+      }
+
+      return { text, model };
+    } catch (err) {
+      clearTimeout(timeoutId);
+
+      // Si es problema de cuota/límite, no seguimos probando más modelos de Gemini
+      if (
+        /quota\/rate limit/i.test(err.message) ||
+        /quota exceeded/i.test(err.message) ||
+        /rate limit/i.test(err.message) ||
+        /resource_exhausted/i.test(err.message)
+      ) {
+        throw err;
+      }
+
+      lastError = `${model}: ${err.message}`;
     }
   }
 
-  // 2. Fallback a OpenRouter
-  if (OPENROUTER_API_KEY) {
+  throw new Error(lastError || 'Gemini falló con todos los modelos candidatos');
+}
+
+function convertChatHistoryToGeminiContents(messages) {
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
+  return safeMessages
+    .filter(msg => msg && typeof msg.content === 'string' && msg.content.trim())
+    .map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+}
+
+function extractGeminiText(data) {
+  const candidates = data?.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) return '';
+
+  const parts = candidates[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+
+  return parts
+    .map(part => part?.text || '')
+    .join('')
+    .trim();
+}
+
+async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
+  const models = [
+    'openrouter/free',
+    'z-ai/glm-4.5-air:free',
+    'stepfun/step-3.5-flash:free'
+  ];
+
+  let lastError = null;
+
+  for (const model of models) {
+    console.log(`[OpenRouter] Intentando conectar con modelo: ${model}...`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6500);
+
     try {
-      console.log("Fallback a OpenRouter...");
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
         headers: {
-          "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://trainos-fitness.netlify.app",
-          "X-Title": "TrainOS Fitness Assistant",
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://trainos-fitness.netlify.app',
+          'X-Title': 'TrainOS Fitness Assistant'
         },
         body: JSON.stringify({
-          model: "mistralai/mistral-7b-instruct:free", // O cualquier otro modelo de fallback
+          model,
+          temperature: 0.2,
+          max_tokens: 700,
           messages: [
-            { role: "system", content: systemPrompt },
-            ...messages
-          ],
+            {
+              role: 'system',
+              content: `${systemPrompt}\n\nDÍA ACTUAL: ${dayLabel}`
+            },
+            ...(Array.isArray(messages) ? messages : [])
+          ]
         }),
+        signal: controller.signal
       });
 
-      const data = await response.json();
-      const responseText = data.choices[0].message.content;
+      clearTimeout(timeoutId);
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        lastError = `${model}: ${data?.error?.message || `HTTP ${response.status}`}`;
+        continue;
+      }
+
+      const text = extractOpenRouterText(data);
+
+      if (!text) {
+        console.log('[OpenRouter] Respuesta 200 pero sin texto claro:', JSON.stringify(data, null, 2));
+        lastError = `${model}: respuesta 200 pero sin texto utilizable`;
+        continue;
+      }
 
       return {
-        statusCode: 200,
-        body: JSON.stringify({ content: responseText, source: "openrouter" }),
+        choices: [
+          {
+            message: {
+              content: text
+            }
+          }
+        ],
+        used_model: model
       };
-    } catch (error) {
-      console.error("Error en OpenRouter:", error);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastError = `${model}: ${err.name === 'AbortError' ? 'timeout' : err.message}`;
     }
   }
 
-  return {
-    statusCode: 500,
-    body: JSON.stringify({ error: "No se pudo conectar con ninguna IA" }),
-  };
-};
+  throw new Error(lastError || 'Todos los modelos de OpenRouter fallaron');
+}
+
+function extractOpenRouterText(data) {
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content;
+
+  if (typeof content === 'string' && content.trim()) {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    const joined = content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part?.type === 'text' && typeof part?.text === 'string') return part.text;
+        return '';
+      })
+      .join('')
+      .trim();
+
+    if (joined) return joined;
+  }
+
+  if (typeof choice?.text === 'string' && choice.text.trim()) {
+    return choice.text.trim();
+  }
+
+  return '';
+}
