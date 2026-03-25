@@ -179,15 +179,15 @@ function extractGeminiText(data) {
 }
 async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
   const models = [
-    "openrouter/free",
-    "z-ai/glm-4.5-air:free",
-    "stepfun/step-3.5-flash:free"
+    "openrouter/free"
+    //'z-ai/glm-4.5-air:free',
+    //'stepfun/step-3.5-flash:free'
   ];
   let lastError = null;
   for (const model of models) {
     console.log(`[OpenRouter] Intentando conectar con modelo: ${model}...`);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6500);
+    const timeoutId = setTimeout(() => controller.abort(), 5e3);
     try {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
@@ -200,7 +200,7 @@ async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          max_tokens: 700,
+          max_tokens: 500,
           messages: [
             {
               role: "system",
@@ -221,8 +221,16 @@ D\xCDA ACTUAL: ${dayLabel}`
       }
       const text = extractOpenRouterText(data);
       if (!text) {
-        console.log("[OpenRouter] Respuesta 200 pero sin texto claro:", JSON.stringify(data, null, 2));
-        lastError = `${model}: respuesta 200 pero sin texto utilizable`;
+        console.log(
+          "[OpenRouter] Respuesta 200 sin content final:",
+          JSON.stringify({
+            model: data?.model,
+            finish_reason: data?.choices?.[0]?.finish_reason,
+            has_reasoning: Boolean(data?.choices?.[0]?.message?.reasoning),
+            has_content: Boolean(data?.choices?.[0]?.message?.content)
+          }, null, 2)
+        );
+        lastError = `${model}: respuesta sin contenido final`;
         continue;
       }
       return {
@@ -244,12 +252,12 @@ D\xCDA ACTUAL: ${dayLabel}`
 }
 function extractOpenRouterText(data) {
   const choice = data?.choices?.[0];
-  const content = choice?.message?.content;
-  if (typeof content === "string" && content.trim()) {
-    return content.trim();
+  const message = choice?.message;
+  if (typeof message?.content === "string" && message.content.trim()) {
+    return message.content.trim();
   }
-  if (Array.isArray(content)) {
-    const joined = content.map((part) => {
+  if (Array.isArray(message?.content)) {
+    const joined = message.content.map((part) => {
       if (typeof part === "string") return part;
       if (part?.type === "text" && typeof part?.text === "string") return part.text;
       return "";
