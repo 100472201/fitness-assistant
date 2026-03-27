@@ -1,16 +1,45 @@
-# React + Vite
+# TrainOS Fitness Assistant 🚀
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**TrainOS** es un asistente de fitness inteligente impulsado por IA diseñado para planificar, registrar y optimizar tus entrenamientos semanales desde una interfaz web premium.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## ✨ Características Principales
 
-## React Compiler
+- **🤖 IA Activa & Fallback:** Integración nativa con **Google Gemini 2.0/1.5** para coaching inteligente. Si falla, el sistema conmuta automáticamente a **OpenRouter** para garantizar disponibilidad.
+- **📅 Planificador Semanal:** Calendario interactivo para registrar sesiones de Empuje (Push), Tirón (Pull), Piernas (Legs), Running, Escalada y más.
+- **🧠 Memoria Semanal:** El asistente tiene acceso a todo lo que has registrado durante la semana actual en `localStorage`, permitiendo ajustes precisos basados en tu fatiga y volumen real.
+- **🖥️ UI "Premium PC":** Interfaz expansiva optimizada para monitores de escritorio con:
+  - Efectos de **Glassmorphism** y difuminado de fondo.
+  - Tipografía **Inter** de alta legibilidad.
+  - Layout de chat centrado de **1200px** para una lectura cómoda.
+  - Barras de desplazamiento personalizadas de alta visibilidad.
+- **⚡ Rendimiento:** Construido con **React + Vite** y desplegado con **Netlify Functions** para un backend serverless seguro.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🛠️ Requisitos & Configuración
 
-## Expanding the ESLint configuration
+El proyecto requiere claves de API para los servicios de IA:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. Clona el repositorio.
+2. Crea un archivo `.env` en la raíz (o configura variables en Netlify):
+   ```env
+   GEMINI_API_KEY=tu_clave_aqui
+   OPENROUTER_API_KEY=tu_clave_aqui (opcional)
+   ```
+3. Instala las dependencias:
+   ```bash
+   npm install
+   ```
+
+## 🚀 Desarrollo Local
+
+Para ejecutar el proyecto con las funciones de backend (Netlify Functions):
+
+```bash
+npx netlify dev
+```
+
+Esto levantará el servidor de desarrollo en `http://localhost:8888`.
+
+---
+*Optimiza tu entrenamiento. Domina tu semana. Entrena con TrainOS.*

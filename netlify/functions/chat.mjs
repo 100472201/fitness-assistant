@@ -118,7 +118,7 @@ async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
 
   for (const model of candidateModels) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       console.log(`[Gemini] Probando modelo: ${model}...`);
@@ -127,33 +127,17 @@ async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
           signal: controller.signal
         }
       );
 
       clearTimeout(timeoutId);
-
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const message =
-          data?.error?.message ||
-          `Gemini HTTP ${response.status}`;
-
-        // Si es quota/rate limit, salir rápido al fallback
-        if (
-          response.status === 429 ||
-          /quota exceeded/i.test(message) ||
-          /rate limit/i.test(message) ||
-          /resource_exhausted/i.test(message)
-        ) {
-          throw new Error(`Gemini quota/rate limit: ${message}`);
-        }
-
+        const message = data?.error?.message || `Gemini HTTP ${response.status}`;
         lastError = `${model}: ${message}`;
         continue;
       }
@@ -168,17 +152,6 @@ async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
       return { text, model };
     } catch (err) {
       clearTimeout(timeoutId);
-
-      // Si es problema de cuota/límite, no seguimos probando más modelos de Gemini
-      if (
-        /quota\/rate limit/i.test(err.message) ||
-        /quota exceeded/i.test(err.message) ||
-        /rate limit/i.test(err.message) ||
-        /resource_exhausted/i.test(err.message)
-      ) {
-        throw err;
-      }
-
       lastError = `${model}: ${err.message}`;
     }
   }
@@ -237,7 +210,7 @@ async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          max_tokens: 500,
+          max_tokens: 250,
           messages: [
             {
               role: 'system',
@@ -269,7 +242,22 @@ async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
             has_reasoning: Boolean(data?.choices?.[0]?.message?.reasoning),
             has_content: Boolean(data?.choices?.[0]?.message?.content)
           }, null, 2)
-          );
+        );
+
+        const finishReason = data?.choices?.[0]?.finish_reason;
+
+        if (finishReason === 'length') {
+          return {
+            choices: [
+              {
+                message: {
+                  content: 'No pude generar una respuesta completa a tiempo. Prueba a reformular la petición de forma más corta.'
+                }
+              }
+            ],
+            used_model: model
+          };
+        }
 
         lastError = `${model}: respuesta sin contenido final`;
         continue;
