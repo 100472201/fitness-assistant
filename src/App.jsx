@@ -89,15 +89,155 @@ const tagLabel = (a) => ({
   running: 'Running', escalada: 'Escalada', core: 'Core', descanso: 'Descanso'
 }[a] || a);
 
-// ── COMPONENTS ─────────────────────────────────────────────────
+// ── LOCAL DECISION ENGINE ──────────────────────────────────────
+function getRecentEntries(weekData) {
+  return Object.entries(weekData)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, entry]) => entry);
+}
 
+function evaluateToday(weekData) {
+  const entries = Object.values(weekData).slice(-3);
+
+  let fatigue = 0;
+  let legLoad = 0;
+  let upperLoad = 0;
+  let runLoad = 0;
+
+  entries.forEach(entry => {
+    const acts = entry.activities || [];
+
+    if (acts.includes('pierna')) {
+      fatigue += 3;
+      legLoad += 3;
+    }
+
+    if (acts.includes('empuje') || acts.includes('tiron')) {
+      fatigue += 2;
+      upperLoad += 2;
+    }
+
+    if (acts.includes('running')) {
+      fatigue += 2;
+      runLoad += 2;
+    }
+
+    if (acts.includes('escalada')) {
+      fatigue += 2;
+      upperLoad += 1;
+    }
+
+    if (acts.includes('core')) {
+      fatigue += 1;
+    }
+  });
+
+  let decision = 'descanso';
+  let message = 'Mejor descanso o sesión ligera.';
+  let score = 5;
+
+  if (fatigue <= 3) {
+    decision = 'entreno_normal';
+    message = 'Puedes entrenar normal hoy.';
+    score = 8;
+  } else if (fatigue <= 6 && legLoad >= 3) {
+    decision = 'upper';
+    message = 'Haz tren superior. Evita pierna.';
+    score = 6;
+  } else if (fatigue <= 6) {
+    decision = 'ligero';
+    message = 'Entrena ligero.';
+    score = 6;
+  } else {
+    decision = 'descanso';
+    message = 'Mejor descanso hoy. Vas cargado.';
+    score = 3;
+  }
+
+  return {
+    fatigue: Math.min(fatigue, 10),
+    decision,
+    message,
+    score
+  };
+}
+
+function shouldUseAI(input) {
+  const text = input.toLowerCase().trim();
+
+  const simplePatterns = [
+    '¿qué entreno hoy?',
+    'que entreno hoy',
+    'qué entreno hoy',
+    '¿descanso hoy?',
+    'descanso hoy',
+    'puedo entrenar hoy',
+    'qué toca hoy',
+    'que toca hoy',
+    'qué toca entrenar',
+    'que toca entrenar'
+  ];
+
+  if (simplePatterns.some(pattern => text.includes(pattern))) {
+    return false;
+  }
+
+  const complexPatterns = [
+    'plan',
+    'planifica',
+    'analiza',
+    'análisis',
+    'ajusta',
+    'explica',
+    'rutina',
+    'sesión completa',
+    'sesion completa',
+    'semana',
+    'volumen',
+    'frecuencia',
+    'bíceps',
+    'biceps',
+    'running'
+  ];
+
+  if (complexPatterns.some(pattern => text.includes(pattern))) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildLocalReply(input, localEval) {
+  const text = input.toLowerCase().trim();
+
+  if (text.includes('descanso')) {
+    if (localEval.fatigue >= 7) {
+      return `**${localEval.score}/10** · Sí, mejor descanso hoy. Fatiga: **${localEval.fatigue}/10**.`;
+    }
+    return `**${localEval.score}/10** · No hace falta descanso total. Puedes hacer algo ligero. Fatiga: **${localEval.fatigue}/10**.`;
+  }
+
+  if (
+    text.includes('qué entreno hoy') ||
+    text.includes('que entreno hoy') ||
+    text.includes('qué toca') ||
+    text.includes('que toca') ||
+    text.includes('puedo entrenar hoy')
+  ) {
+    return `**${localEval.score}/10** · ${localEval.message} Fatiga: **${localEval.fatigue}/10**.`;
+  }
+
+  return `**${localEval.score}/10** · ${localEval.message}`;
+}
+
+// ── COMPONENT ──────────────────────────────────────────────────
 export default function App() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [weekData, setWeekData] = useState({});
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [userInput, setUserInput] = useState('');
-  
+
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalKey, setModalKey] = useState(null);
@@ -115,9 +255,9 @@ export default function App() {
       const acts = entry.activities || [];
       if (acts.length > 0 && !acts.includes('descanso')) active++;
       if (acts.includes('empuje')) empuje++;
-      if (acts.includes('tiron') || acts.includes('escalada')) tiron++; // escalation counts as pull
+      if (acts.includes('tiron') || acts.includes('escalada')) tiron++;
       if (acts.includes('running')) run++;
-      if (acts.includes('tiron') || acts.includes('empuje')) biceps++; // proxy
+      if (acts.includes('tiron') || acts.includes('empuje')) biceps++;
     });
     return { active, empuje, tiron, run, biceps };
   })();
@@ -183,10 +323,12 @@ export default function App() {
     const dates = getWeekDates(weekOffset);
     const lines = [];
     let hasAny = false;
+
     dates.forEach((date, idx) => {
       const key = dateKey(date);
       const entry = weekData[key];
       const todayMark = isToday(date) ? ' (HOY)' : '';
+
       if (entry && (entry.activities?.length > 0 || entry.notes)) {
         hasAny = true;
         const acts = (entry.activities || []).map(tagLabel).join(', ');
@@ -196,58 +338,90 @@ export default function App() {
         lines.push(`• ${DAY_NAMES_FULL[idx]}${todayMark}: sin registrar`);
       }
     });
+
     if (!hasAny) return null;
-    const mon = dates[0], sun = dates[6];
+
+    const mon = dates[0];
+    const sun = dates[6];
+
     return `[CONTEXTO SEMANA ${mon.getDate()}/${mon.getMonth() + 1} – ${sun.getDate()}/${sun.getMonth() + 1}]\n${lines.join('\n')}\n`;
   };
 
   const sendMessage = async (textOverride = null) => {
-    const raw = textOverride || userInput.trim();
-    if (!raw || isLoading) return;
+  const raw = textOverride || userInput.trim();
+  if (!raw || isLoading) return;
 
-    const ctx = buildWeekContext();
-    const finalMessage = ctx ? `${ctx}\n${raw}` : raw;
+  const localEval = evaluateToday(weekData);
 
-    const newMessages = [...messages, { role: 'user', content: raw }];
-    setMessages(newMessages);
-    setUserInput('');
-    setIsLoading(true);
+  const newMessages = [...messages, { role: 'user', content: raw }];
+  setMessages(newMessages);
+  setUserInput('');
 
-    const dayLabel = `${DAY_NAMES_FULL[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]}, ${new Date().getDate()} de ${MONTHS_FULL[new Date().getMonth()]}`;
+  if (!shouldUseAI(raw)) {
+    const localReply = buildLocalReply(raw, localEval);
+    setMessages([...newMessages, { role: 'assistant', content: localReply }]);
+    return;
+  }
 
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, { role: 'user', content: finalMessage }],
-          system_prompt: SYSTEM_PROMPT,
-          day_label: dayLabel
-        })
-      });
+  const ctx = buildWeekContext();
+  const finalMessage = ctx ? `${ctx}\n${raw}` : raw;
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        console.error("Error en API:", res.status, errorData);
-        setMessages(prev => [...prev, { role: 'assistant', content: `_Error del servidor (${res.status}): ${errorData.error || errorData.message || 'Sin detalles'}_` }]);
-        return;
-      }
+  setIsLoading(true);
 
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
+  const dayIndex = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
+  const dayLabel = `${DAY_NAMES_FULL[dayIndex]}, ${new Date().getDate()} de ${MONTHS_FULL[new Date().getMonth()]}`;
 
-      if (content) {
-        setMessages(prev => [...prev, { role: 'assistant', content: content }]);
-      } else {
-        console.warn("Respuesta sin contenido:", data);
-        setMessages(prev => [...prev, { role: 'assistant', content: `_Error: No se recibió contenido. (Fuente: ${data.provider || 'desconocida'})_` }]);
-      }
-    } catch (err) {
-      console.error("Error de red/fetch:", err);
-      setMessages(prev => [...prev, { role: 'assistant', content: `_Error de conexión: ${err.message}. Revisa la consola o asegúrate de que 'netlify dev' está corriendo._` }]);
-    } finally {
-      setIsLoading(false);
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [...messages, { role: 'user', content: finalMessage }],
+        system_prompt: SYSTEM_PROMPT,
+        day_label: dayLabel
+      })
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      console.error('Error en API:', res.status, errorData);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `_Error del servidor (${res.status}): ${errorData.error || errorData.message || 'Sin detalles'}_`
+        }
+      ]);
+      return;
     }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+
+    if (content) {
+      setMessages(prev => [...prev, { role: 'assistant', content }]);
+    } else {
+      console.warn('Respuesta sin contenido:', data);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `_Error: No se recibió contenido. (Fuente: ${data.provider || 'desconocida'})_`
+        }
+      ]);
+    }
+  } catch (err) {
+    console.error('Error de red/fetch:', err);
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: `_Error de conexión: ${err.message}. Revisa la consola o asegúrate de que 'netlify dev' está corriendo._`
+      }
+    ]);
+  } finally {
+    setIsLoading(false);
+  }
   };
 
   // Rendering Markdown (simplified for port)
@@ -255,7 +429,6 @@ export default function App() {
     return text
       .split('\n\n')
       .map((block, i) => {
-        // Very basic markdown parsing
         let html = block
           .replace(/^### (.+)$/gm, '<h3>$1</h3>')
           .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
@@ -268,15 +441,23 @@ export default function App() {
 
         if (html.includes('<li>')) html = `<ul>${html}</ul>`;
         if (!/^<[hublp\/]/.test(html.trim())) html = `<p>${html.replace(/\n/g, '<br>')}</p>`;
-        
+
         return <div key={i} dangerouslySetInnerHTML={{ __html: html }} />;
       });
   };
 
   const currentWeekDates = getWeekDates(weekOffset);
-  const mon = currentWeekDates[0], sun = currentWeekDates[6];
+  const mon = currentWeekDates[0];
+  const sun = currentWeekDates[6];
   const weekRangeStr = `${mon.getDate()} ${MONTHS[mon.getMonth()]} – ${sun.getDate()} ${MONTHS[sun.getMonth()]}`;
-  const weekLabelStr = weekOffset === 0 ? 'ACTUAL' : weekOffset === -1 ? 'PASADA' : weekOffset === 1 ? 'PRÓXIMA' : (weekOffset < 0 ? `HACE ${Math.abs(weekOffset)}w` : `EN ${weekOffset}w`);
+  const weekLabelStr =
+    weekOffset === 0
+      ? 'ACTUAL'
+      : weekOffset === -1
+        ? 'PASADA'
+        : weekOffset === 1
+          ? 'PRÓXIMA'
+          : (weekOffset < 0 ? `HACE ${Math.abs(weekOffset)}w` : `EN ${weekOffset}w`);
 
   return (
     <div className="app-container">
@@ -299,14 +480,16 @@ export default function App() {
               <button className="week-btn" onClick={() => setWeekOffset(prev => prev + 1)}>→</button>
             </div>
           </div>
+
           <div className="calendar-days">
             {currentWeekDates.map((date, idx) => {
               const key = dateKey(date);
               const entry = weekData[key] || { activities: [], notes: '' };
               const today = isToday(date);
+
               return (
-                <div 
-                  key={key} 
+                <div
+                  key={key}
                   className={`day-row ${today ? 'today' : ''} ${entry.activities.length > 0 ? 'has-entry' : ''}`}
                   onClick={() => handleOpenModal(key, idx, date)}
                 >
@@ -318,16 +501,19 @@ export default function App() {
                     </div>
                     {entry.activities.length === 0 && <span className="add-label">+ añadir</span>}
                   </div>
+
                   {entry.activities.length > 0 && (
                     <div className="day-tags">
                       {entry.activities.map(a => <span key={a} className={`tag ${a}`}>{tagLabel(a)}</span>)}
                     </div>
                   )}
+
                   {entry.notes && <div className="day-preview">{entry.notes}</div>}
                 </div>
               );
             })}
           </div>
+
           <div className="week-stats">
             <div className="stat-item"><div className="stat-val">{stats.active}</div><div className="stat-key">activos</div></div>
             <div className="stat-item"><div className="stat-val">{stats.empuje}</div><div className="stat-key">empuje</div></div>
@@ -377,6 +563,7 @@ export default function App() {
                 </div>
               </div>
             )}
+
             {messages.map((msg, i) => (
               <div key={i} className={`message ${msg.role}`}>
                 <div className="msg-avatar">{msg.role === 'user' ? '🧑' : '🤖'}</div>
@@ -385,6 +572,7 @@ export default function App() {
                 </div>
               </div>
             ))}
+
             {isLoading && (
               <div className="message assistant">
                 <div className="msg-avatar">🤖</div>
@@ -401,7 +589,7 @@ export default function App() {
 
           <div className="input-area">
             <div className="input-box">
-              <textarea 
+              <textarea
                 id="userInput"
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
@@ -411,12 +599,13 @@ export default function App() {
                     sendMessage();
                   }
                 }}
-                placeholder="Cuéntame qué entrenaste, pídeme una sesión o analiza tu semana..." 
+                placeholder="Cuéntame qué entrenaste, pídeme una sesión o analiza tu semana..."
                 rows="1"
               />
               <button id="sendBtn" disabled={isLoading} onClick={() => sendMessage()}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
                 </svg>
               </button>
             </div>
@@ -426,17 +615,21 @@ export default function App() {
       </div>
 
       {/* MODAL */}
-      <div className={`modal-overlay ${isModalOpen ? '' : 'hidden'}`} onClick={(e) => e.target.className.includes('modal-overlay') && setIsModalOpen(false)}>
+      <div
+        className={`modal-overlay ${isModalOpen ? '' : 'hidden'}`}
+        onClick={(e) => e.target.className.includes('modal-overlay') && setIsModalOpen(false)}
+      >
         <div className="modal">
           <div className="modal-title">{modalDate ? DAY_NAMES_FULL[modalIdx].toUpperCase() : ''}</div>
           <div className="modal-subtitle">
             {modalDate ? `${modalDate.getDate()} de ${MONTHS_FULL[modalDate.getMonth()]}` : ''}
             {modalDate && isToday(modalDate) ? ' · HOY' : ''}
           </div>
+
           <div className="modal-label">Actividades del día</div>
           <div className="activity-grid">
             {['empuje', 'tiron', 'pierna', 'running', 'escalada', 'core', 'descanso'].map(name => (
-              <button 
+              <button
                 key={name}
                 className={`activity-btn ${name} ${modalActivities.includes(name) ? 'active' : ''}`}
                 onClick={() => handleToggleActivity(name)}
@@ -451,13 +644,15 @@ export default function App() {
               </button>
             ))}
           </div>
+
           <div className="modal-label">Notas de sesión (opcional)</div>
-          <textarea 
-            className="modal-textarea" 
+          <textarea
+            className="modal-textarea"
             value={modalNotes}
             onChange={(e) => setModalNotes(e.target.value)}
-            placeholder="Ej: Press banca 4x8 a 80kg, dominadas 4x6, curl inclinado 3x12. Sensaciones, carga, fatiga..." 
+            placeholder="Ej: Press banca 4x8 a 80kg, dominadas 4x6, curl inclinado 3x12. Sensaciones, carga, fatiga..."
           />
+
           <div className="modal-actions">
             <button className="btn-clear" onClick={handleClearDay}>Borrar día</button>
             <div style={{ display: 'flex', gap: '8px' }}>

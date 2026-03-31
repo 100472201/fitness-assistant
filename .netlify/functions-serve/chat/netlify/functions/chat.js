@@ -27,7 +27,8 @@ var handler = async (event) => {
     return jsonResponse(405, { error: "Method Not Allowed" });
   }
   try {
-    const { messages, system_prompt, day_label } = JSON.parse(event.body || "{}");
+    const { messages, day_label } = JSON.parse(event.body || "{}");
+    const systemPrompt = buildSystemPrompt(day_label);
     const geminiApiKey = process.env.GEMINI_API_KEY;
     const openrouterApiKey = process.env.OPENROUTER_API_KEY;
     if (!geminiApiKey && !openrouterApiKey) {
@@ -42,7 +43,7 @@ var handler = async (event) => {
       try {
         const geminiResult = await callGemini({
           apiKey: geminiApiKey,
-          systemPrompt: system_prompt,
+          systemPrompt,
           dayLabel: day_label,
           messages
         });
@@ -67,7 +68,7 @@ var handler = async (event) => {
       try {
         const openrouterResult = await callOpenRouter({
           apiKey: openrouterApiKey,
-          systemPrompt: system_prompt,
+          systemPrompt,
           dayLabel: day_label,
           messages
         });
@@ -98,6 +99,22 @@ function jsonResponse(statusCode, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   };
+}
+function buildSystemPrompt(dayLabel) {
+  return `
+Eres un asistente de entrenamiento.
+Responde en espa\xF1ol.
+S\xE9 breve, directo y \xFAtil.
+
+Reglas:
+- M\xE1ximo 2 frases.
+- Da primero la recomendaci\xF3n.
+- Luego una raz\xF3n breve.
+- No repitas el contexto.
+- No uses introducciones.
+- No uses tono de chatbot.
+- D\xCDA ACTUAL: ${dayLabel}
+  `.trim();
 }
 async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
   const candidateModels = [
@@ -192,7 +209,7 @@ async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          max_tokens: 250,
+          max_tokens: 120,
           messages: [
             {
               role: "system",

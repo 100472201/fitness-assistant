@@ -6,7 +6,8 @@ export const handler = async (event) => {
   }
 
   try {
-    const { messages, system_prompt, day_label } = JSON.parse(event.body || '{}');
+    const { messages, day_label } = JSON.parse(event.body || '{}');
+    const systemPrompt = buildSystemPrompt(day_label);
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
     const openrouterApiKey = process.env.OPENROUTER_API_KEY;
@@ -26,7 +27,7 @@ export const handler = async (event) => {
       try {
         const geminiResult = await callGemini({
           apiKey: geminiApiKey,
-          systemPrompt: system_prompt,
+          systemPrompt,
           dayLabel: day_label,
           messages
         });
@@ -54,7 +55,7 @@ export const handler = async (event) => {
       try {
         const openrouterResult = await callOpenRouter({
           apiKey: openrouterApiKey,
-          systemPrompt: system_prompt,
+          systemPrompt,
           dayLabel: day_label,
           messages
         });
@@ -90,6 +91,23 @@ function jsonResponse(statusCode, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   };
+}
+
+function buildSystemPrompt(dayLabel) {
+  return `
+Eres un asistente de entrenamiento.
+Responde en español.
+Sé breve, directo y útil.
+
+Reglas:
+- Máximo 2 frases.
+- Da primero la recomendación.
+- Luego una razón breve.
+- No repitas el contexto.
+- No uses introducciones.
+- No uses tono de chatbot.
+- DÍA ACTUAL: ${dayLabel}
+  `.trim();
 }
 
 async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
@@ -159,6 +177,7 @@ async function callGemini({ apiKey, systemPrompt, dayLabel, messages }) {
   throw new Error(lastError || 'Gemini falló con todos los modelos candidatos');
 }
 
+
 function convertChatHistoryToGeminiContents(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
 
@@ -210,7 +229,7 @@ async function callOpenRouter({ apiKey, systemPrompt, dayLabel, messages }) {
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          max_tokens: 250,
+          max_tokens: 120,
           messages: [
             {
               role: 'system',
@@ -308,4 +327,22 @@ function extractOpenRouterText(data) {
   }
 
   return '';
+}
+
+function buildJsonPrompt(dayLabel) {
+  return `
+Eres un asistente de entrenamiento.
+Devuelve SOLO JSON válido con esta forma:
+{
+  "message": "string",
+  "decision": "string",
+  "score": number
+}
+
+Reglas:
+- "message" máximo 120 caracteres.
+- Español.
+- Directo.
+- DÍA ACTUAL: ${dayLabel}
+  `.trim();
 }
